@@ -5,6 +5,21 @@
 # For help debugging build failures open an issue on the RStudio community with the 'github-actions' tag.
 # https://community.rstudio.com/new-topic?category=Package%20development&tags=github-actions
 on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
   push:
     branches:
       - main
@@ -15,6 +30,17 @@ on:
       - master
 
 name: R-CMD-check
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # The one variable that separates the arms: on baseline, action-checkout
+  # skips its Set up Chalk step entirely.
+  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+
+run-name: "R-CMD-check ${{ inputs.leg || 'push' }} ${{ inputs.racecar_run }}"
 
 jobs:
   R-CMD-check:
@@ -27,9 +53,6 @@ jobs:
       matrix:
         config:
           # vdiffr & shinytest only runs on mac r-release since the results aren't cross-platform
-          - {os: macOS-latest,   r: 'release', visual_tests: true, node: "14.x", shinytest: true}
-          - {os: windows-latest, r: 'release'}
-          # - {os: windows-latest, r: 'oldrel-1'} # pak is having issues
           - {os: ubuntu-latest,   r: 'devel'}
           - {os: ubuntu-latest,   r: 'release'}
           - {os: ubuntu-latest,   r: 'oldrel-1'}
@@ -46,9 +69,19 @@ jobs:
       plotly_api_key: ${{ secrets.PLOTLY_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          observables_continue_on_error: false
+          lfs: false
           persist-credentials: false
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
 
       - uses: r-lib/actions/setup-r@v2
         id: install-r
