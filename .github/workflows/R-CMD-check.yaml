@@ -22,12 +22,12 @@ on:
         default: ""
   push:
     branches:
-      - main
-      - master
+    - main
+    - master
   pull_request:
     branches:
-      - main
-      - master
+    - main
+    - master
 
 name: R-CMD-check
 
@@ -53,10 +53,10 @@ jobs:
       matrix:
         config:
           # vdiffr & shinytest only runs on mac r-release since the results aren't cross-platform
-          - {os: ubuntu-latest,   r: 'devel'}
-          - {os: ubuntu-latest,   r: 'release'}
-          - {os: ubuntu-latest,   r: 'oldrel-1'}
-          - {os: ubuntu-latest,   r: 'oldrel-2'}
+        - {os: ubuntu-latest, r: 'devel'}
+        - {os: ubuntu-latest, r: 'release'}
+        - {os: ubuntu-latest, r: 'oldrel-1'}
+        - {os: ubuntu-latest, r: 'oldrel-2'}
           # - {os: ubuntu-latest,   r: 'oldrel-3'} # dependency issues with oldrel-3
           # - {os: ubuntu-latest,   r: 'oldrel-4'} # dependency issues with oldrel-4
 
@@ -69,75 +69,146 @@ jobs:
       plotly_api_key: ${{ secrets.PLOTLY_API_KEY }}
 
     steps:
-      - name: Checkout code
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
-          observables_continue_on_error: false
-          lfs: false
-          persist-credentials: false
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+    - name: Checkout code
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+        persist-credentials: false
+    - uses: r-lib/actions/setup-r@v2
+      id: install-r
+      with:
+        r-version: ${{ matrix.config.r }}
+        use-public-rspm: true
 
-      - uses: r-lib/actions/setup-r@v2
-        id: install-r
-        with:
-          r-version: ${{ matrix.config.r }}
-          use-public-rspm: true
+    - uses: r-lib/actions/setup-pandoc@v2
 
-      - uses: r-lib/actions/setup-pandoc@v2
+    - uses: r-lib/actions/setup-r-dependencies@v2
+      with:
+        cache-version: 3
+        needs: check
 
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          cache-version: 3
-          needs: check
+    - name: Set up Python (for reticulate)
+      if: matrix.config.visual_tests == true
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
 
-      - name: Set up Python (for reticulate)
-        if: matrix.config.visual_tests == true
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+    - name: Install kaleido
+      if: matrix.config.visual_tests == true
+      run: |
+        # We pin kaleido to v0.2.1 here since >=v1.0 doesn't appear to be correctly rendering some plots
+        Rscript -e 'library(reticulate); use_python(Sys.which("python")); py_install(c("kaleido==0.2.1", "plotly"))'
 
-      - name: Install kaleido
-        if: matrix.config.visual_tests == true
-        run: |
-          # We pin kaleido to v0.2.1 here since >=v1.0 doesn't appear to be correctly rendering some plots
-          Rscript -e 'library(reticulate); use_python(Sys.which("python")); py_install(c("kaleido==0.2.1", "plotly"))'
-        
         # Run test() before R CMD check since, for some reason, rcmdcheck::rcmdcheck() skips vdiffr tests
-      - name: Run Tests
-        run: |
-          options(crayon.enabled = TRUE, testthat.progress.max_fails=1000)
-          res <- devtools::test()
-          df <- as.data.frame(res)
-          if (sum(df$failed) > 0 || any(df$error)) stop("GHA CI tests failed")
-        shell: Rscript {0}
-        
-      # Upload the whole pkg since tests where run with devtools::test()
-      - name: Upload check results
-        if: always()
-        uses: actions/upload-artifact@master
-        with:
-          name: ${{ runner.os }}-r${{ matrix.config.r }}-results
-          path: |
-            ./
-            !./.git/
+    - name: Run Tests
+      run: |
+        options(crayon.enabled = TRUE, testthat.progress.max_fails=1000)
+        res <- devtools::test()
+        df <- as.data.frame(res)
+        if (sum(df$failed) > 0 || any(df$error)) stop("GHA CI tests failed")
+      shell: Rscript {0}
 
-      - name: Check package
-        uses: r-lib/actions/check-r-package@v2
-        with:
-          check-dir: '"check"'
+      # Upload the whole pkg since tests where run with devtools::test()
+    - name: Upload check results
+      if: always()
+      uses: actions/upload-artifact@master
+      with:
+        name: ${{ runner.os }}-r${{ matrix.config.r }}-results
+        path: |
+          ./
+          !./.git/
+
+    - name: Check package
+      uses: r-lib/actions/check-r-package@v2
+      with:
+        check-dir: '"check"'
           # Run check with --no-tests since we ran them abve
           # 2023-01-03: `{purrr}` v1.0.0 had trouble on Windows without the `--no-multiarch`
           # https://github.com/plotly/plotly.R/pull/2221
-          args: 'c("--no-tests", "--no-manual", "--as-cran", "--no-multiarch")'
-          error-on: '"warning"'
-      
+        args: 'c("--no-tests", "--no-manual", "--as-cran", "--no-multiarch")'
+        error-on: '"warning"'
+
       #- name: Show testthat output
       #  if: always()
       #  run: find check -name 'testthat.Rout*' -exec cat '{}' \; || true
       #  shell: bash
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
