@@ -10,8 +10,6 @@ on:
   workflow_dispatch:
 
   # Run weekly to pick up any docs changes
-  schedule:
-    - cron: '0 0 * * 0'  # Every Sunday at midnight UTC
 
   # Optional: trigger from docs repo via repository_dispatch
   repository_dispatch:
